@@ -106,7 +106,7 @@ std::string flag_gid;
 bool flag_index = true;
 std::string flag_seccomp = "kill";
 int flag_index_nicelevel = 0;
-int flag_preallocate_file_mb = 0;
+int64_t flag_preallocate_file_mb = 0;
 bool flag_watchdogs = true;
 std::string flag_testimony;
 
@@ -600,7 +600,7 @@ int Main(int argc, char** argv) {
   // one.  This should also be done before signal masking, because apparently
   // sometimes Linux sends a SIGSETXID signal to threads during this, and if
   // that is ignored setXid will hang forever.
-  DropPrivileges();
+  //  DropPrivileges();
 
   // Start a thread whose sole purpose is to handle signals.
   // Signal handling in a multi-threaded application is HARD.  This binary

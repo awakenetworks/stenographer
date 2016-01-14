@@ -181,7 +181,9 @@ TestimonyPackets::~TestimonyPackets() {
 void TestimonyPackets::TReturnToKernel(struct tpacket_block_desc* block,
                                        void* ths) {
   TestimonyPackets* t = reinterpret_cast<TestimonyPackets*>(ths);
+  t->mu_.lock();
   CHECK_SUCCESS(NegErrno(testimony_return_block(t->t_, block)));
+  t->mu_.unlock();
 }
 
 Error TestimonyPackets::NextBlock(Block* b, int poll_millis) {

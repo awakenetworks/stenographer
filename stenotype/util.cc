@@ -91,6 +91,21 @@ void* ProducerConsumerQueue::Get() {
   return ret;
 }
 
+GET_FOR_RET ProducerConsumerQueue::GetFor(int milli, void** elem) {
+  std::unique_lock<std::mutex> lock(mu_);
+  if (d_.empty() && !closed_) {
+    if(cond_.wait_for(lock, std::chrono::milliseconds(milli)) == std::cv_status::timeout) {
+      return GET_FOR_TIMEOUT;
+    }
+  }
+  if (d_.empty() && closed_) {
+    return GET_FOR_CLOSED;
+  }
+  *elem = d_.front();
+  d_.pop_front();
+  return GET_FOR_SUCCEED;
+}
+
 void ProducerConsumerQueue::Close() {
   std::unique_lock<std::mutex> lock(mu_);
   closed_ = true;

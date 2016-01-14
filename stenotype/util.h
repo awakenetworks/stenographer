@@ -276,6 +276,12 @@ class Notification {
   DISALLOW_COPY_AND_ASSIGN(Notification);
 };
 
+enum GET_FOR_RET {
+  GET_FOR_SUCCEED,
+  GET_FOR_TIMEOUT,
+  GET_FOR_CLOSED
+};
+
 // ProducerConsumerQueue is a very simple thread-safe FIFO queue.
 class ProducerConsumerQueue {
  public:
@@ -287,6 +293,8 @@ class ProducerConsumerQueue {
 
   // Get value off of the queue.  Gets NULL if queue is closed.
   void* Get();
+
+  GET_FOR_RET GetFor(int milli, void** elem);
 
   // Close queue.  All subsequent Get calls will immediately return NULL.
   void Close();

@@ -138,6 +138,7 @@ class TestimonyPackets : public Packets {
 
  private:
   static void TReturnToKernel(struct tpacket_block_desc*, void* ths);
+  std::mutex mu_;
   testimony t_;
 };
 #endif

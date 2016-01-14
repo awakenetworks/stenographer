@@ -92,6 +92,7 @@ int32_t flag_blocks = 2048;
 int32_t flag_aiops = 128;
 int64_t flag_filesize_mb = 4 << 10;
 int32_t flag_threads = 1;
+int32_t flag_thread_groups = 1;
 int64_t flag_fileage_sec = 60;
 uint16_t flag_fanout_type =
 // Use rollover as the default if it's available.
@@ -175,6 +176,9 @@ int ParseOptions(int key, char* arg, struct argp_state* state) {
     case 318:
       flag_testimony = arg;
       break;
+    case 319:
+      flag_thread_groups = atoi(arg);
+      break;
   }
   return 0;
 }
@@ -214,6 +218,7 @@ void ParseOptions(int argc, char** argv) {
 #else
       {"testimony", 318, n, 0, "TESTIMONY NOT COMPILED INTO THIS BINARY"},
 #endif
+      {"thread_groups", 319, n, 0, "Number of thread groups"},
       {0},
   };
   struct argp argp = {options, &ParseOptions};
@@ -416,15 +421,78 @@ void HandleSignalsThread() {
   LOG(V1) << "Signal handling done";
 }
 
-void RunThread(int thread, st::ProducerConsumerQueue* write_index,
-               Packets* v3) {
-  if (flag_threads > 1) {
-    LOG_IF_ERROR(SetAffinity(thread), "set affinity");
-  }
-  Watchdog dog("Thread " + std::to_string(thread),
+/*
+ * Responsible for receiving blocks and handing them in the
+ * the threads (for indexing and storing).
+ *
+ * Each group will take care of "flag_threads / flag_thread_groups"
+ * number of threads.
+ *
+ */
+void RunThreadGroup(int group, st::ProducerConsumerQueue* thread_inputs,
+                    Packets* v3) {
+  LOG_IF_ERROR(SetAffinity(group + 1), "set group affinity");
+  Watchdog dog("Thread Group" + std::to_string(group),
                (flag_watchdogs ? flag_fileage_sec * 2 : -1));
 
   std::unique_ptr<Packets> cleanup(v3);
+
+  DropPacketThreadPrivileges();
+  LOG(INFO) << "Thread Gruop" << group << " starting to process packets";
+
+  uint32_t group_size = flag_threads / flag_thread_groups;
+  uint32_t rr = 0;
+  int64_t start = GetCurrentTimeMicros();
+  int64_t lastlog = 0;
+  int64_t blocks = 0;
+  while (run_threads) {
+    int64_t current_micros = GetCurrentTimeMicros();
+    // Read in a new block from AF_PACKET.
+    Block b;
+    CHECK_SUCCESS(v3->NextBlock(&b, kNumMillisPerSecond));
+    if (b.Empty()) {
+      continue;
+    }
+
+    // Queue the block to a thread in the group.
+    Block* elem  = new Block();
+    uint32_t thread = group * group_size + rr % group_size;
+    elem->Swap(&b);
+    thread_inputs[thread].Put(elem);
+    rr++;
+    blocks++;
+
+    // Log stats every 100MB or at least 1/minute.
+    if (blocks % 100 == 0 ||
+        lastlog < current_micros - 60 * kNumMicrosPerSecond) {
+      lastlog = current_micros;
+      double duration = (current_micros - start) * 1.0 / kNumMicrosPerSecond;
+      Stats stats;
+      Error stats_err = v3->GetStats(&stats);
+      if (SUCCEEDED(stats_err)) {
+        LOG(INFO) << "Thread " << thread << " stats: MB=" << blocks
+                  << " secs=" << duration << " MBps=" << (blocks / duration)
+                  << " " << stats.String();
+      } else {
+        LOG(ERROR) << "Unable to get stats: " << *stats_err;
+      }
+    }
+    dog.Feed();
+  }
+  LOG(INFO) << "Finished thread group " << group << " successfully";
+
+}
+
+/*
+ * Responsible for indexing, storing, and releasing the blocks.
+ *
+ */
+void RunThread(int thread, st::ProducerConsumerQueue* write_index,
+               st::ProducerConsumerQueue* thread_input) {
+  LOG_IF_ERROR(SetAffinity(thread * flag_thread_groups / flag_threads + 1),
+               "set thread affinity");
+  Watchdog dog("Thread " + std::to_string(thread),
+               (flag_watchdogs ? flag_fileage_sec * 2 : -1));
 
   DropPacketThreadPrivileges();
   LOG(INFO) << "Thread " << thread << " starting to process packets";
@@ -447,11 +515,10 @@ void RunThread(int thread, st::ProducerConsumerQueue* write_index,
     LOG(ERROR) << "Indexing turned off";
   }
 
-  int64_t start = GetCurrentTimeMicros();
-  int64_t lastlog = 0;
-  int64_t blocks = 0;
+  GET_FOR_RET input_status = GET_FOR_SUCCEED;
   int64_t block_offset = 0;
-  for (int64_t remaining = flag_count; remaining != 0 && run_threads;) {
+  for (int64_t remaining = flag_count;
+       remaining != 0 && input_status != GET_FOR_CLOSED;) {
     CHECK_SUCCESS(output.CheckForCompletedOps(false));
     int64_t current_micros = GetCurrentTimeMicros();
 
@@ -473,40 +540,24 @@ void RunThread(int thread, st::ProducerConsumerQueue* write_index,
       }
     }
     // Read in a new block from AF_PACKET.
-    Block b;
-    CHECK_SUCCESS(v3->NextBlock(&b, kNumMillisPerSecond));
-    if (b.Empty()) {
+    Block* b;
+    input_status = thread_input->GetFor(100,reinterpret_cast<void **>(&b));
+    if (input_status != GET_FOR_SUCCEED) {
       continue;
     }
 
     // Index all packets if necessary.
     if (flag_index) {
-      for (; remaining != 0 && b.Next(&p); remaining--) {
+      for (; remaining != 0 && b->Next(&p); remaining--) {
         index->Process(p, block_offset << 20);
       }
     }
-    blocks++;
     block_offset++;
-
-    // Log stats every 100MB or at least 1/minute.
-    if (blocks % 100 == 0 ||
-        lastlog < current_micros - 60 * kNumMicrosPerSecond) {
-      lastlog = current_micros;
-      double duration = (current_micros - start) * 1.0 / kNumMicrosPerSecond;
-      Stats stats;
-      Error stats_err = v3->GetStats(&stats);
-      if (SUCCEEDED(stats_err)) {
-        LOG(INFO) << "Thread " << thread << " stats: MB=" << blocks
-                  << " secs=" << duration << " MBps=" << (blocks / duration)
-                  << " " << stats.String();
-      } else {
-        LOG(ERROR) << "Unable to get stats: " << *stats_err;
-      }
-    }
 
     // Start an async write of the current block.  Could block
     // waiting for the write 'aiops' writes ago.
-    CHECK_SUCCESS(output.Write(&b));
+    CHECK_SUCCESS(output.Write(b));
+    delete b;
     dog.Feed();
   }
   LOG(V1) << "Finishing thread " << thread;
@@ -535,6 +586,7 @@ int Main(int argc, char** argv) {
   CHECK(flag_blocks >= 16);  // arbitrary lower limit.
   CHECK(flag_threads >= 1);
   CHECK(flag_aiops <= flag_blocks);
+  CHECK(flag_threads % flag_thread_groups == 0);
   CHECK(flag_dir != "");
   if (flag_dir[flag_dir.size() - 1] != '/') {
     flag_dir += "/";
@@ -545,7 +597,7 @@ int Main(int argc, char** argv) {
   // setuid/setgid and could lose us the ability to do this at a later date.
 
   std::vector<Packets*> sockets;
-  for (int i = 0; i < flag_threads; i++) {
+  for (int i = 0; i < flag_thread_groups; i++) {
     if (flag_testimony.empty()) {
       LOG(INFO) << "Setting up AF_PACKET sockets for packet reading";
       int socktype = SOCK_RAW;
@@ -578,7 +630,7 @@ int Main(int argc, char** argv) {
       LOG(INFO) << "Connecting to testimony socket for packet reading";
       testimony t;
       CHECK_SUCCESS(NegErrno(testimony_connect(&t, flag_testimony.c_str())));
-      CHECK(flag_threads == testimony_conn(t)->fanout_size)
+      CHECK(flag_thread_groups == testimony_conn(t)->fanout_size)
           << "--threads does not match testimony fanout size";
       CHECK(testimony_conn(t)->block_size == 1 << 20)
           << "Testimony does not supply 1MB blocks";
@@ -621,12 +673,23 @@ int Main(int argc, char** argv) {
   // Now, we can finally start the threads that read in packets, index them, and
   // write them to disk.
   auto write_indexes = new st::ProducerConsumerQueue[flag_threads];
+  // "thread_inputs" will be the channel between 'thread group' and
+  // 'thread'.
+  auto thread_inputs = new st::ProducerConsumerQueue[flag_threads];
   LOG(V1) << "Starting writing threads";
   std::vector<std::thread*> threads;
   for (int i = 0; i < flag_threads; i++) {
     LOG(V1) << "Starting thread " << i;
     threads.push_back(
-        new std::thread(&RunThread, i, &write_indexes[i], sockets[i]));
+        new std::thread(&RunThread, i, &write_indexes[i], &thread_inputs[i]));
+  }
+
+  LOG(V1) << "Starting writing thread groups";
+  std::vector<std::thread*> threadgroups;
+  for (int i = 0; i < flag_thread_groups; i++) {
+    LOG(V1) << "Starting thread group " << i;
+    threadgroups.push_back(
+        new std::thread(&RunThreadGroup, i, thread_inputs, sockets[i]));
   }
 
   // To avoid blocking on index writes, each writer thread has a secondary
@@ -648,6 +711,18 @@ int Main(int argc, char** argv) {
   // other threads to finish.
   DropCommonThreadPrivileges();
 
+  for (auto group : threadgroups) {
+    LOG(V1) << "===============Waiting for thread group=========";
+    CHECK(group->joinable());
+    group->join();
+    LOG(V1) << "Thread Group finished";
+    delete group;
+  }
+  // 'threads' will exit when the corresponding 'thread_input' queue
+  // is closed.
+  for (int i = 0; i < flag_threads; i++) {
+    thread_inputs[i].Close();
+  }
   for (auto thread : threads) {
     LOG(V1) << "===============Waiting for thread==============";
     CHECK(thread->joinable());
@@ -667,6 +742,7 @@ int Main(int argc, char** argv) {
     }
   }
   delete[] write_indexes;
+  delete[] thread_inputs;
   LOG(INFO) << "Process exiting successfully";
   main_complete.Notify();
   return 0;

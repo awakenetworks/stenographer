@@ -31,7 +31,6 @@ import (
 	"time"
 
 	"github.com/google/stenographer/base"
-	"github.com/google/stenographer/certs"
 	"github.com/google/stenographer/config"
 	"github.com/google/stenographer/filecache"
 	"github.com/google/stenographer/httputil"
@@ -49,31 +48,17 @@ var (
 
 const (
 	fileSyncFrequency = 15 * time.Second
-
-	// These files will be read from Config.CertPath.
-	// Use stenokeys.sh to generate them.
-	caCertFilename     = "ca_cert.pem"
-	serverCertFilename = "server_cert.pem"
-	serverKeyFilename  = "server_key.pem"
 )
 
 // Serve starts up an HTTP server using http.DefaultServerMux to handle
-// requests.  This server will server over TLS, using the certs
-// stored in c.CertPath to verify itself to clients and verify clients.
+// requests.
 func (e *Env) Serve() error {
-	tlsConfig, err := certs.ClientVerifyingTLSConfig(filepath.Join(e.conf.CertPath, caCertFilename))
-	if err != nil {
-		return fmt.Errorf("cannot verify client cert: %v", err)
-	}
 	server := &http.Server{
 		Addr:      fmt.Sprintf("%s:%d", e.conf.Host, e.conf.Port),
-		TLSConfig: tlsConfig,
 	}
 	http.HandleFunc("/query", e.handleQuery)
 	http.Handle("/debug/stats", stats.S)
-	return server.ListenAndServeTLS(
-		filepath.Join(e.conf.CertPath, serverCertFilename),
-		filepath.Join(e.conf.CertPath, serverKeyFilename))
+	return server.ListenAndServe()
 }
 
 func (e *Env) handleQuery(w http.ResponseWriter, r *http.Request) {

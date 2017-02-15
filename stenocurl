@@ -55,27 +55,12 @@ fi
 
 HOST="$( < "$STENOGRAPHER_CONFIG" $JQ -r '.Host')"
 PORT="$( < "$STENOGRAPHER_CONFIG" $JQ -r '.Port')"
-CERTPATH="$( < "$STENOGRAPHER_CONFIG" $JQ -r '.CertPath')"
-if [ -z "$PORT" -o -z "$CERTPATH" ]; then
-  echo "Unable to get port ($PORT) or certpath ($CERTPATH) from config ($STENOGRAPHER_CONFIG)" >&2
+if [ -z "$PORT" ]; then
+  echo "Unable to get port ($PORT) from config ($STENOGRAPHER_CONFIG)" >&2
   exit 1
 fi
-URL="https://$HOST:$PORT$PATH"  # PATH already starts with /
-
-if ! /bin/cat "$CERTPATH/client_key.pem" > /dev/null; then
-  echo "You do not have permission to access Stenographer data" >&2
-  /bin/ls -l "$CERTPATH/client_key.pem" >&2
-  while [ "$CERTPATH" != "/" ]; do
-    CERTPATH="$(/usr/bin/dirname "$CERTPATH")"
-    /bin/ls -l -d "$CERTPATH" >&2
-  done
-  echo -e "Your permissions: user=$(/usr/bin/id -n -u) groups=$(/usr/bin/groups)" >&2
-  exit 1
-fi
+URL="http://$HOST:$PORT$PATH"  # PATH already starts with /
 
 /usr/bin/curl \
-    --cert "$CERTPATH/client_cert.pem" \
-    --key "$CERTPATH/client_key.pem" \
-    --cacert "$CERTPATH/ca_cert.pem" \
     "$@" \
     "$URL"

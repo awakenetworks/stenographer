@@ -72,25 +72,18 @@ if [ ! -f /etc/init/stenographer.conf ]; then
   sudo chmod 0644 /etc/init/stenographer.conf
 fi
 
-if [ ! -d /etc/stenographer/certs ]; then
-  Info "Setting up stenographer /etc directory"
-  sudo mkdir -p /etc/stenographer/certs
-  sudo chown -R root:root /etc/stenographer/certs
-  if [ ! -f /etc/stenographer/config ]; then
-    sudo cp -vf configs/steno.conf /etc/stenographer/config
-    sudo chown root:root /etc/stenographer/config
-    sudo chmod 644 /etc/stenographer/config
-  fi
-  sudo chown root:root /etc/stenographer
+if [ ! -f /etc/stenographer/config ]; then
+  sudo cp -vf configs/steno.conf /etc/stenographer/config
+  sudo chown root:root /etc/stenographer/config
+  sudo chmod 644 /etc/stenographer/config
 fi
+sudo chown root:root /etc/stenographer
 
 if grep -q /path/to /etc/stenographer/config; then
   Error "Create directories to output packets/indexes to, then update"
   Error "/etc/stenographer/config to point to them"
   exit 1
 fi
-
-sudo ./stenokeys.sh stenographer stenographer
 
 Info "Copying stenographer/stenotype"
 sudo cp -vf stenographer "$BINDIR/stenographer"

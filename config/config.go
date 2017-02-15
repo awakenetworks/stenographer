@@ -55,7 +55,6 @@ type Config struct {
 	Flags         []string
 	Port          int
 	Host          string // Location to listen.
-	CertPath      string // Directory where client and server certs are stored.
 	MaxOpenFiles  int    // Max number of file descriptors opened at once
 }
 
